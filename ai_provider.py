@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import time
+import io
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -44,8 +45,11 @@ MAX_RETRIEVAL_QUERIES = 8
 RESULTS_PER_QUERY = 3
 MAX_CHARS_PER_CHUNK = 4500
 MAX_EVIDENCE_CHARS = 60000
-MAX_IMAGES = 8
+MAX_IMAGES = 12
 MAX_OUTPUT_TOKENS = 12000
+MAX_IMAGE_DIMENSION = 1600
+MAX_IMAGE_BYTES = 2_500_000
+MAX_IMAGE_OUTPUT_TOKENS = 1200
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 TEXT_EXTENSIONS = {".pdf", ".docx", ".txt"}
@@ -322,31 +326,128 @@ def _build_input(
     task: str,
     case_context: str,
     evidence: list[dict],
-    image_file_ids: list[str],
+    image_summaries: list[dict],
 ) -> list[dict]:
+    image_text = ""
+    if image_summaries:
+        blocks = ["PHOTO / IMAGE OBSERVATIONS"]
+        for i, item in enumerate(image_summaries, 1):
+            blocks.append(
+                f"\\n--- PHOTO {i}: {item['filename']} ---\\n{item['text']}"
+            )
+        image_text = "\\n".join(blocks)
+
     text_prompt = f"""
 TASK:
 {task}
 
 {_build_evidence_packet(case_context, evidence)}
 
+{image_text}
+
 OUTPUT REQUIREMENTS
 - Produce a useful working draft for the selected task.
 - Keep unsupported matters explicitly marked as unresolved.
 - For each material factual assertion, identify the source filename when possible.
 - Do not fabricate page numbers, quotations, witnesses or evidence.
+- Treat image observations as observations, not as facts beyond what the image
+  actually shows.
 - For legal provisions, state that the IO must verify the provision against an
   approved current legal source before official use unless the proposition is
   already supplied as verified material.
 """
-    content: list[dict] = [{"type": "input_text", "text": text_prompt}]
-    for file_id in image_file_ids[:MAX_IMAGES]:
-        content.append({
-            "type": "input_image",
-            "file_id": file_id,
-            "detail": "auto",
-        })
-    return [{"role": "user", "content": content}]
+    return [{"role": "user", "content": [{"type": "input_text", "text": text_prompt}]}]
+
+
+def _make_ai_image_bytes(path: str) -> bytes:
+    """Downsize a case photo before sending it to the vision model."""
+    try:
+        from PIL import Image
+    except Exception as exc:
+        raise RuntimeError("Pillow is required for case-photo analysis.") from exc
+
+    with Image.open(path) as image:
+        image = image.convert("RGB")
+        image.thumbnail((MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION), Image.Resampling.LANCZOS)
+        quality = 82
+        while True:
+            buffer = io.BytesIO()
+            image.save(buffer, format="JPEG", quality=quality, optimize=True)
+            data = buffer.getvalue()
+            if len(data) <= MAX_IMAGE_BYTES or quality <= 55:
+                return data
+            quality -= 7
+
+
+def _analyse_case_photo(
+    client: OpenAI,
+    doc: dict,
+) -> dict | None:
+    """Analyse one resized photo in an isolated, small vision request."""
+    path = doc.get("file_path")
+    if not path or not Path(path).exists():
+        return None
+
+    data = _make_ai_image_bytes(path)
+    filename = Path(doc.get("filename", "case_photo")).stem + "_ai.jpg"
+
+    buffer = io.BytesIO(data)
+    buffer.name = filename
+    uploaded = client.files.create(
+        file=buffer,
+        purpose="vision",
+    )
+    file_id = _get(uploaded, "id")
+    if not file_id:
+        return None
+
+    prompt = (
+        "Examine this case photograph for an authorised investigating officer. "
+        "Report only visible, defensible observations relevant to investigation "
+        "documentation. Do not identify people, infer events, infer intent, or "
+        "invent details. Mention uncertainty. If text is visible, transcribe "
+        "only text you can actually read. Keep the response under 800 words."
+    )
+
+    response = client.responses.create(
+        model=MODEL,
+        instructions=(
+            "You are a forensic-documentation photo observation assistant. "
+            "Describe only what is actually visible in the image. "
+            "Do not make legal conclusions."
+        ),
+        input=[{
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": prompt},
+                {"type": "input_image", "file_id": file_id, "detail": "low"},
+            ],
+        }],
+        max_output_tokens=MAX_IMAGE_OUTPUT_TOKENS,
+    )
+    return {
+        "filename": doc.get("filename", "Unknown photo"),
+        "text": response.output_text,
+    }
+
+
+def _analyse_case_photos(
+    client: OpenAI,
+    image_docs: list[dict],
+) -> list[dict]:
+    summaries: list[dict] = []
+    for doc in image_docs[:MAX_IMAGES]:
+        try:
+            result = _analyse_case_photo(client, doc)
+            if result:
+                summaries.append(result)
+        except RateLimitError:
+            # Do not let one large/problematic photo prevent document analysis.
+            break
+        except Exception:
+            # Photo analysis is supplementary; textual case records remain primary.
+            continue
+    return summaries
 
 
 def _count_input_tokens(client: OpenAI, input_payload: list[dict]) -> int | None:
@@ -370,9 +471,9 @@ def _call_model(
     task: str,
     case_context: str,
     evidence: list[dict],
-    image_file_ids: list[str],
+    image_summaries: list[dict],
 ) -> str:
-    input_payload = _build_input(task, case_context, evidence, image_file_ids)
+    input_payload = _build_input(task, case_context, evidence, image_summaries)
 
     token_count = _count_input_tokens(client, input_payload)
     if token_count is not None and token_count > 400000:
@@ -407,24 +508,16 @@ def run_ai(task: str, case_context: str, documents: list[dict] | None = None) ->
     if vector_store_id:
         evidence = _retrieve_evidence(client, vector_store_id, task)
 
-    image_file_ids = []
-    for doc in image_docs:
-        file_id = doc.get("openai_file_id")
-        if not file_id:
-            path = doc.get("file_path")
-            if path and Path(path).exists():
-                with open(path, "rb") as fh:
-                    uploaded = client.files.create(file=fh, purpose="vision")
-                file_id = _get(uploaded, "id")
-        if file_id:
-            image_file_ids.append(file_id)
+    # IMPORTANT: never send original high-resolution case photos together with
+    # the final document-generation request. Each photo is resized and analysed
+    # in an isolated low-detail vision call; only the compact observation is
+    # included in the final text request. This prevents photo pixels/tokens from
+    # consuming the entire TPM budget.
+    image_summaries = _analyse_case_photos(client, image_docs)
 
-    # First attempt uses the full controlled packet. If a provider-side
-    # rate/size limit still occurs, retry once with half the evidence and half
-    # the images. Never retry with the original giant file-search request.
     try:
         return _call_model(
-            client, task, case_context, evidence, image_file_ids
+            client, task, case_context, evidence, image_summaries
         )
     except RateLimitError as exc:
         smaller = evidence[: max(4, len(evidence) // 2)]
@@ -438,14 +531,14 @@ def run_ai(task: str, case_context: str, documents: list[dict] | None = None) ->
                 task,
                 case_context,
                 smaller,
-                image_file_ids[: max(2, len(image_file_ids) // 2)],
+                image_summaries[: max(2, len(image_summaries) // 2)],
             )
         except RateLimitError:
             raise RuntimeError(
                 "OpenAI rejected the prepared M-POL AI request because of a "
-                "rate/token limit. The whole case file was NOT sent to the "
-                "model; retry after a short wait or reduce the number of "
-                "case photos being analysed."
+                "rate/token limit. The complete investigation file and original "
+                "case photographs were not sent to the final drafting request. "
+                "Retry after a short wait or reduce the number of case photos."
             ) from exc
 
 
