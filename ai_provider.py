@@ -1,35 +1,121 @@
 """
-AI provider abstraction.
+M-POL AI Investigation Documentation Assistant
+AI provider layer.
 
-Production implementation should:
-1. retrieve only documents belonging to the current case;
-2. retrieve verified legal sources separately;
-3. require structured outputs;
-4. attach source-document/page provenance;
-5. never silently convert inference into fact.
+Important:
+- API key is NEVER stored in this file.
+- The key is supplied through Streamlit Secrets.
+- AI must not invent facts, evidence or documents.
 """
+
+import os
+import streamlit as st
+from openai import OpenAI
+
 
 SYSTEM_RULES = """
-You are an Investigation Documentation Assistant for an authorised police officer.
+You are M-POL AI, an Investigation Documentation Assistant
+for an authorised police officer.
 
 PRIMARY RULES
-- Never invent facts, evidence, witnesses, dates, places, documents, investigative actions or legal provisions.
-- Treat uploaded case records as the primary factual source.
-- Never treat an unuploaded document as nonexistent.
-- If a document is referred to but not present, say: "Referenced but not located in the current workspace."
-- Distinguish allegations, source-supported facts, evidence, inference and unresolved issues.
-- When records conflict, identify the conflict instead of selecting a preferred version without justification.
-- Every material factual assertion should have source provenance where available.
-- Legal propositions must come from an approved legal knowledge base and be independently verified before official use.
-- The IO remains responsible for investigative decisions and final documents.
+
+1. Never invent facts, evidence, witnesses, dates, places,
+   documents, investigative actions or legal provisions.
+
+2. Treat uploaded case records as the primary factual source.
+
+3. Never treat an unuploaded document as nonexistent.
+
+4. If a document is referred to but is not present in the
+   current workspace, state:
+   "Referenced but not located in the current workspace."
+
+5. Distinguish clearly between:
+   - allegation
+   - source-supported fact
+   - evidence
+   - inference
+   - unresolved issue
+
+6. When records conflict, identify the conflict rather than
+   silently choosing one version.
+
+7. Every material factual assertion should have source
+   provenance where available.
+
+8. Legal propositions must be verified against an approved
+   legal source before being used in an official document.
+
+9. Do not create evidence merely because it would strengthen
+   a case.
+
+10. Do not assume that a person, document, seizure, expert
+    opinion, medical finding or investigative action exists
+    unless supported by the case record.
+
+11. The Investigating Officer remains responsible for the
+    investigation and final official document.
+
+12. AI output must be reviewed and verified by the IO before
+    official use.
 """
 
+
 def build_prompt(task: str, case_context: str) -> str:
-    return f"{SYSTEM_RULES}\\n\\nTASK:\\n{task}\\n\\nCASE CONTEXT:\\n{case_context}"
+    return f"""
+TASK:
+{task}
+
+CASE CONTEXT:
+{case_context}
+"""
+
+
+def get_openai_client():
+    """
+    Obtain the OpenAI API key from Streamlit Secrets.
+    Never hard-code the key in source code.
+    """
+
+    api_key = None
+
+    try:
+        api_key = st.secrets.get("OPENAI_API_KEY")
+    except Exception:
+        pass
+
+    if not api_key:
+        api_key = os.getenv("OPENAI_API_KEY")
+
+    if not api_key:
+        raise RuntimeError(
+            "OPENAI_API_KEY is not configured. "
+            "Add it to Streamlit Secrets."
+        )
+
+    return OpenAI(api_key=api_key)
+
+
+def run_ai(task: str, case_context: str) -> str:
+    """
+    Send a task and case context to the OpenAI Responses API.
+    """
+
+    client = get_openai_client()
+
+    prompt = build_prompt(task, case_context)
+
+    response = client.responses.create(
+        model="gpt-6-astra",
+        instructions=SYSTEM_RULES,
+        input=prompt,
+    )
+
+    return response.output_text
+
 
 def unavailable_provider_message() -> str:
     return (
-        "AI provider is not connected in this prototype. "
-        "The workflow, case model and provenance controls are ready; "
-        "an approved model/API must be configured before live AI analysis."
+        "AI provider is not connected. "
+        "Check the OPENAI_API_KEY Streamlit Secret."
     )
