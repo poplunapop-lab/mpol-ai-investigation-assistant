@@ -3,7 +3,7 @@ import time
 from pathlib import Path
 
 import streamlit as st
-from openai import OpenAI
+from openai import OpenAI, RateLimitError
 
 # Current API model IDs verified against OpenAI's current documentation.
 # Astra is used for both retrieval and drafting here to keep the workflow
@@ -363,7 +363,7 @@ def run_ai(task, case_context, documents):
                 {
                     "type": "file_search",
                     "vector_store_ids": [vector_store_id],
-                    "max_num_results": 50,
+                    "max_num_results": 12,
                 }
             )
 
@@ -383,11 +383,26 @@ def run_ai(task, case_context, documents):
 
         if tools:
             response_kwargs["tools"] = tools
-            response_kwargs["include"] = [
-                "file_search_call.results"
-            ]
 
-        response = client.responses.create(**response_kwargs)
+        try:
+            response = client.responses.create(**response_kwargs)
+        except RateLimitError as error:
+            # A very large retrieval result can exceed the organisation's TPM
+            # limit even though the vector store itself is valid. Retry once
+            # with a smaller retrieval set instead of failing the workflow.
+            error_text = str(error)
+            if "Request too large" not in error_text and "tokens per min" not in error_text:
+                raise
+
+            status.write("Large retrieval detected; retrying with a smaller evidence set...")
+            response_kwargs["tools"] = [
+                {
+                    "type": "file_search",
+                    "vector_store_ids": [vector_store_id],
+                    "max_num_results": 6,
+                }
+            ]
+            response = client.responses.create(**response_kwargs)
 
         progress.progress(1.0)
         status.write("M-POL AI completed the analysis.")
