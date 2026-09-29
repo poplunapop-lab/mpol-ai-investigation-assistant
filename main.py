@@ -122,10 +122,47 @@ elif page == "Case Workspace":
             st.subheader("Legal Ingredient Mapping")
             st.info("Legal engine will retrieve the verified statutory provision and map each ingredient to case evidence. It will not invent missing evidence.")
 
-        with tabs[5]:
+                with tabs[5]:
             st.subheader("FR / Chargesheet")
-            action = st.selectbox("Action", ["Draft Final Report", "Draft Chargesheet", "Improve Existing Report"])
+            action = st.selectbox(
+                "Action",
+                ["Draft Final Report", "Draft Chargesheet", "Improve Existing Report"]
+            )
+
             if st.button("Run documentation workflow"):
+                case_context = f"""
+Case ID: {cid}
+FIR Number: {case['fir_no']}
+Police Station: {case['police_station']}
+District: {case['district']}
+Sections: {case['sections']}
+Investigating Officer: {case['io_name']}
+
+Documents currently registered in the workspace:
+"""
+
+                for d in docs:
+                    case_context += (
+                        f"- {d['filename']} | Category: {d['category']}\n"
+                    )
+
+                with st.spinner("M-POL AI is analysing the case..."):
+                    try:
+                        result = run_ai(action, case_context)
+
+                        st.subheader("M-POL AI Output")
+                        st.markdown(result)
+
+                    except Exception as e:
+                        st.error(f"AI workflow failed: {e}")
+
+        with tabs[6]:
+            st.subheader("Supervisory Audit")
+            st.info(
+                "Production audit will compare the draft against the structured "
+                "case record, source documents, referenced-but-unlocated "
+                "documents and legal ingredient matrix."
+            )
     case_context = f"""
 Case ID: {cid}
 FIR Number: {case['fir_no']}
