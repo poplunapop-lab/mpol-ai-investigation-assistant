@@ -39,6 +39,7 @@ except Exception:  # pragma: no cover
 
 
 MODEL = "gpt-6-astra"
+PROVIDER_VERSION = "M-POL-2026-09-30-FINAL-TEXT-ONLY"
 
 # Hard safety limits for the final generation request.
 MAX_RETRIEVAL_QUERIES = 8
@@ -326,128 +327,26 @@ def _build_input(
     task: str,
     case_context: str,
     evidence: list[dict],
-    image_summaries: list[dict],
 ) -> list[dict]:
-    image_text = ""
-    if image_summaries:
-        blocks = ["PHOTO / IMAGE OBSERVATIONS"]
-        for i, item in enumerate(image_summaries, 1):
-            blocks.append(
-                f"\\n--- PHOTO {i}: {item['filename']} ---\\n{item['text']}"
-            )
-        image_text = "\\n".join(blocks)
-
+    """Build a TEXT-ONLY final request. No files, images or File Search tools."""
     text_prompt = f"""
 TASK:
 {task}
 
 {_build_evidence_packet(case_context, evidence)}
 
-{image_text}
-
 OUTPUT REQUIREMENTS
 - Produce a useful working draft for the selected task.
 - Keep unsupported matters explicitly marked as unresolved.
 - For each material factual assertion, identify the source filename when possible.
 - Do not fabricate page numbers, quotations, witnesses or evidence.
-- Treat image observations as observations, not as facts beyond what the image
-  actually shows.
 - For legal provisions, state that the IO must verify the provision against an
   approved current legal source before official use unless the proposition is
   already supplied as verified material.
+- Case photographs are stored in the workspace but are NOT included in this
+  generation request. Do not infer visual facts that were not supplied as text.
 """
     return [{"role": "user", "content": [{"type": "input_text", "text": text_prompt}]}]
-
-
-def _make_ai_image_bytes(path: str) -> bytes:
-    """Downsize a case photo before sending it to the vision model."""
-    try:
-        from PIL import Image
-    except Exception as exc:
-        raise RuntimeError("Pillow is required for case-photo analysis.") from exc
-
-    with Image.open(path) as image:
-        image = image.convert("RGB")
-        image.thumbnail((MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION), Image.Resampling.LANCZOS)
-        quality = 82
-        while True:
-            buffer = io.BytesIO()
-            image.save(buffer, format="JPEG", quality=quality, optimize=True)
-            data = buffer.getvalue()
-            if len(data) <= MAX_IMAGE_BYTES or quality <= 55:
-                return data
-            quality -= 7
-
-
-def _analyse_case_photo(
-    client: OpenAI,
-    doc: dict,
-) -> dict | None:
-    """Analyse one resized photo in an isolated, small vision request."""
-    path = doc.get("file_path")
-    if not path or not Path(path).exists():
-        return None
-
-    data = _make_ai_image_bytes(path)
-    filename = Path(doc.get("filename", "case_photo")).stem + "_ai.jpg"
-
-    buffer = io.BytesIO(data)
-    buffer.name = filename
-    uploaded = client.files.create(
-        file=buffer,
-        purpose="vision",
-    )
-    file_id = _get(uploaded, "id")
-    if not file_id:
-        return None
-
-    prompt = (
-        "Examine this case photograph for an authorised investigating officer. "
-        "Report only visible, defensible observations relevant to investigation "
-        "documentation. Do not identify people, infer events, infer intent, or "
-        "invent details. Mention uncertainty. If text is visible, transcribe "
-        "only text you can actually read. Keep the response under 800 words."
-    )
-
-    response = client.responses.create(
-        model=MODEL,
-        instructions=(
-            "You are a forensic-documentation photo observation assistant. "
-            "Describe only what is actually visible in the image. "
-            "Do not make legal conclusions."
-        ),
-        input=[{
-            "role": "user",
-            "content": [
-                {"type": "input_text", "text": prompt},
-                {"type": "input_image", "file_id": file_id, "detail": "low"},
-            ],
-        }],
-        max_output_tokens=MAX_IMAGE_OUTPUT_TOKENS,
-    )
-    return {
-        "filename": doc.get("filename", "Unknown photo"),
-        "text": response.output_text,
-    }
-
-
-def _analyse_case_photos(
-    client: OpenAI,
-    image_docs: list[dict],
-) -> list[dict]:
-    summaries: list[dict] = []
-    for doc in image_docs[:MAX_IMAGES]:
-        try:
-            result = _analyse_case_photo(client, doc)
-            if result:
-                summaries.append(result)
-        except RateLimitError:
-            # Do not let one large/problematic photo prevent document analysis.
-            break
-        except Exception:
-            # Photo analysis is supplementary; textual case records remain primary.
-            continue
-    return summaries
 
 
 def _count_input_tokens(client: OpenAI, input_payload: list[dict]) -> int | None:
@@ -471,9 +370,8 @@ def _call_model(
     task: str,
     case_context: str,
     evidence: list[dict],
-    image_summaries: list[dict],
 ) -> str:
-    input_payload = _build_input(task, case_context, evidence, image_summaries)
+    input_payload = _build_input(task, case_context, evidence)
 
     token_count = _count_input_tokens(client, input_payload)
     if token_count is not None and token_count > 400000:
@@ -496,50 +394,34 @@ def _call_model(
 
 def run_ai(task: str, case_context: str, documents: list[dict] | None = None) -> str:
     """
-    Main interface. Compatible with both the older two-argument main.py and
-    the current three-argument document-aware main.py.
+    Stable production path: vector-store retrieval is used only to select small
+    text excerpts. The final Responses request is deliberately TEXT-ONLY.
+    This eliminates image/file expansion from the 500k TPM request entirely.
     """
     client = get_openai_client()
     documents = documents or []
 
-    vector_store_id, image_docs = _ensure_documents_indexed(client, documents)
+    vector_store_id, _image_docs = _ensure_documents_indexed(client, documents)
 
     evidence: list[dict] = []
     if vector_store_id:
         evidence = _retrieve_evidence(client, vector_store_id, task)
 
-    # IMPORTANT: never send original high-resolution case photos together with
-    # the final document-generation request. Each photo is resized and analysed
-    # in an isolated low-detail vision call; only the compact observation is
-    # included in the final text request. This prevents photo pixels/tokens from
-    # consuming the entire TPM budget.
-    image_summaries = _analyse_case_photos(client, image_docs)
-
     try:
-        return _call_model(
-            client, task, case_context, evidence, image_summaries
-        )
+        return _call_model(client, task, case_context, evidence)
     except RateLimitError as exc:
-        smaller = evidence[: max(4, len(evidence) // 2)]
-        smaller = [
-            {**item, "text": item["text"][:2500]}
-            for item in smaller
-        ]
+        # Second attempt is substantially smaller. It still contains no files,
+        # images or File Search tool.
+        smaller = evidence[:4]
+        smaller = [{**item, "text": item["text"][:1800]} for item in smaller]
         try:
-            return _call_model(
-                client,
-                task,
-                case_context,
-                smaller,
-                image_summaries[: max(2, len(image_summaries) // 2)],
-            )
-        except RateLimitError:
+            return _call_model(client, task, case_context, smaller)
+        except RateLimitError as second_exc:
             raise RuntimeError(
-                "OpenAI rejected the prepared M-POL AI request because of a "
-                "rate/token limit. The complete investigation file and original "
-                "case photographs were not sent to the final drafting request. "
-                "Retry after a short wait or reduce the number of case photos."
-            ) from exc
+                f"M-POL AI provider version {PROVIDER_VERSION} was deployed, "
+                "but OpenAI still rejected the text-only request for a token/rate "
+                "limit. This is no longer a whole-file/photo expansion error."
+            ) from second_exc
 
 
 def unavailable_provider_message() -> str:
