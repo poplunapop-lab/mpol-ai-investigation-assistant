@@ -418,36 +418,45 @@ def _call_model(
 
 def run_ai(task: str, case_context: str, documents: list[dict] | None = None) -> str:
     """
-    Stable production path: vector-store retrieval is used only to select small
-    text excerpts. The final Responses request is deliberately TEXT-ONLY.
-    This eliminates image/file expansion from the 500k TPM request entirely.
+    EMERGENCY DIAGNOSTIC MODE.
+
+    Sends ONLY a tiny text request to the model.
+    No documents.
+    No vector store.
+    No retrieval.
+    No images.
+    No File Search.
     """
+
     client = get_openai_client()
-    documents = documents or []
 
-    vector_store_id, _image_docs = _ensure_documents_indexed(client, documents)
+    diagnostic_input = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": (
+                        "M-POL AI diagnostic test.\n\n"
+                        f"Task: {task}\n\n"
+                        "Reply with exactly: M-POL AI CONNECTION OK"
+                    ),
+                }
+            ],
+        }
+    ]
 
-    evidence: list[dict] = []
-    if vector_store_id:
-        evidence = _retrieve_evidence(client, vector_store_id, task)
+    response = client.responses.create(
+        model=MODEL,
+        instructions=(
+            "You are a diagnostic test for the M-POL AI application. "
+            "Reply only with the requested diagnostic response."
+        ),
+        input=diagnostic_input,
+        max_output_tokens=100,
+    )
 
-    try:
-        return _call_model(client, task, case_context, evidence)
-    except RateLimitError as exc:
-        # Second attempt is substantially smaller. It still contains no files,
-        # images or File Search tool.
-        smaller = evidence[:4]
-        smaller = [{**item, "text": item["text"][:1800]} for item in smaller]
-        try:
-            return _call_model(client, task, case_context, smaller)
-        except RateLimitError as second_exc:
-            raise RuntimeError(
-                f"M-POL AI provider version {PROVIDER_VERSION} was deployed, "
-                "but OpenAI still rejected the text-only request for a token/rate "
-                "limit. This is no longer a whole-file/photo expansion error."
-            ) from second_exc
-
-
+    return response.output_text
 def unavailable_provider_message() -> str:
     return (
         "AI provider is not connected. Check the OPENAI_API_KEY Streamlit Secret."
