@@ -1,6 +1,6 @@
 import streamlit as st
 import sys
-from ai_provider import run_ai, PROVIDER_VERSION
+from ai_provider import run_ai
 
 
 from pathlib import Path
@@ -9,7 +9,6 @@ from io import BytesIO
 
 from PIL import Image
 
-st.write("AI PROVIDER:", PROVIDER_VERSION)
 APP_DIR = Path(__file__).resolve().parent
 if str(APP_DIR) not in sys.path:
     sys.path.append(str(APP_DIR))
