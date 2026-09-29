@@ -1,9 +1,11 @@
 import streamlit as st
 from pathlib import Path
+from io import BytesIO
 import sys
 
-APP_DIR = Path(__file__).resolve().parent
+from PIL import Image
 
+APP_DIR = Path(__file__).resolve().parent
 if str(APP_DIR) not in sys.path:
     sys.path.append(str(APP_DIR))
 
@@ -17,7 +19,6 @@ from database import (
 )
 
 from ai_provider import run_ai
-
 
 init_db()
 
@@ -37,19 +38,13 @@ st.sidebar.title("M-POL AI")
 
 page = st.sidebar.radio(
     "Navigation",
-    [
-        "Dashboard",
-        "New Case",
-        "Case Workspace",
-        "AI Rules",
-    ],
+    ["Dashboard", "New Case", "Case Workspace", "AI Rules"],
 )
 
 
 if page == "Dashboard":
 
     st.header("Investigation Dashboard")
-
     cases = list_cases()
 
     col1, col2, col3, col4 = st.columns(4)
@@ -103,36 +98,23 @@ elif page == "New Case":
             "FIR Number",
             placeholder="Example: 42/2026",
         )
-
         police_station = st.text_input(
             "Police Station",
             placeholder="Example: Noney PS",
         )
-
-        district = st.text_input(
-            "District",
-            value="Noney",
-        )
-
+        district = st.text_input("District", value="Noney")
         sections = st.text_input(
             "Sections",
             placeholder="Example: BNS / NDPS / UAPA etc.",
         )
-
-        io_name = st.text_input(
-            "Investigating Officer",
-        )
+        io_name = st.text_input("Investigating Officer")
 
         submitted = st.form_submit_button("Create Case")
 
         if submitted:
-
             if not fir_no or not police_station:
-                st.error(
-                    "FIR Number and Police Station are required."
-                )
+                st.error("FIR Number and Police Station are required.")
             else:
-
                 case_id = create_case(
                     fir_no,
                     police_station,
@@ -140,7 +122,6 @@ elif page == "New Case":
                     sections,
                     io_name,
                 )
-
                 st.success(
                     f"Case workspace created successfully. Case ID: {case_id}"
                 )
@@ -149,11 +130,9 @@ elif page == "New Case":
 elif page == "Case Workspace":
 
     st.header("Case Workspace")
-
     cases = list_cases()
 
     if not cases:
-
         st.info("No cases available. Create a case first.")
 
     else:
@@ -203,21 +182,17 @@ elif page == "Case Workspace":
             st.subheader("Investigation Documents")
 
             st.write(
-                "Upload documents in any order. M-POL will analyse their "
-                "contents and reconstruct chronology internally."
+                "Upload documents in any order. M-POL reconstructs chronology "
+                "internally from the records."
             )
+
+            st.markdown("### 1. Case Documents")
 
             uploaded_files = st.file_uploader(
                 "Upload Case Documents",
-                type=[
-                    "pdf",
-                    "docx",
-                    "txt",
-                    "jpg",
-                    "jpeg",
-                    "png",
-                ],
+                type=["pdf", "docx", "txt"],
                 accept_multiple_files=True,
+                key="case_documents_uploader",
             )
 
             document_category = st.selectbox(
@@ -235,6 +210,7 @@ elif page == "Case Workspace":
                     "Site / Sketch",
                     "Other",
                 ],
+                key="document_category",
             )
 
             other_type = ""
@@ -243,24 +219,21 @@ elif page == "Case Workspace":
                 other_type = st.text_input(
                     "Specify document type",
                     placeholder="Example: Bank record / Wireless message",
+                    key="other_document_type",
                 )
 
-            if st.button("Register Uploaded Documents"):
+            if st.button(
+                "Register Uploaded Documents",
+                key="register_documents",
+            ):
 
                 if not uploaded_files:
-
-                    st.warning(
-                        "Please select at least one document."
-                    )
+                    st.warning("Please select at least one document.")
 
                 elif document_category == "Other" and not other_type.strip():
-
-                    st.warning(
-                        "Please specify the document type."
-                    )
+                    st.warning("Please specify the document type.")
 
                 else:
-
                     category_to_store = (
                         f"Other — {other_type.strip()}"
                         if document_category == "Other"
@@ -268,7 +241,6 @@ elif page == "Case Workspace":
                     )
 
                     for uploaded_file in uploaded_files:
-
                         add_document(
                             case_id,
                             uploaded_file.name,
@@ -277,29 +249,213 @@ elif page == "Case Workspace":
                             uploaded_file.type,
                         )
 
-                    st.success(
-                        "Documents uploaded and stored successfully."
+                    st.toast(
+                        "Documents registered successfully.",
+                        icon="✅",
                     )
-
                     st.rerun()
 
             st.divider()
 
+            st.markdown("### 2. Photographs / Images")
+
+            st.caption(
+                "M-POL automatically names photographs by type: "
+                "FIR1.jpg, FIR2.jpg, SITE1.jpg, etc."
+            )
+
+            photo_type_options = {
+                "FIR Photograph": "FIR",
+                "Scene / Site Photograph": "SITE",
+                "Seizure / Recovery Photograph": "SEIZURE",
+                "Injury / Medical Photograph": "INJURY",
+                "Property / Material Evidence Photograph": "EVIDENCE",
+                "Other Photograph": "PHOTO",
+            }
+
+            photo_type = st.selectbox(
+                "Photograph Type",
+                list(photo_type_options.keys()),
+                key="photo_type",
+            )
+
+            photo_prefix = photo_type_options[photo_type]
+
+            photo_source = st.radio(
+                "Photo Source",
+                ["Take Photo", "Upload Existing Photo"],
+                horizontal=True,
+                key="photo_source",
+            )
+
+            photo_file = None
+
+            if photo_source == "Take Photo":
+                st.warning(
+                    "Camera flash: Streamlit/browser cannot force the iPhone "
+                    "hardware flash ON. Turn the iPhone flash ON before capture."
+                )
+                photo_file = st.camera_input(
+                    "Take Photograph",
+                    key="case_camera",
+                )
+
+            else:
+                photo_file = st.file_uploader(
+                    "Select Photograph",
+                    type=["jpg", "jpeg", "png"],
+                    accept_multiple_files=False,
+                    key="existing_photo_uploader",
+                )
+
+            if photo_file is not None:
+
+                try:
+                    image = Image.open(photo_file).convert("RGB")
+                    width, height = image.size
+
+                    crop_photo = st.checkbox(
+                        "Crop photograph before saving",
+                        value=False,
+                        key="crop_photo",
+                    )
+
+                    cropped_image = image
+
+                    if crop_photo:
+                        st.caption(
+                            "Use the four sliders to define the crop rectangle."
+                        )
+
+                        col1, col2 = st.columns(2)
+
+                        with col1:
+                            left_pct = st.slider(
+                                "Left (%)",
+                                0,
+                                90,
+                                0,
+                                key="crop_left",
+                            )
+                            right_pct = st.slider(
+                                "Right (%)",
+                                10,
+                                100,
+                                100,
+                                key="crop_right",
+                            )
+
+                        with col2:
+                            top_pct = st.slider(
+                                "Top (%)",
+                                0,
+                                90,
+                                0,
+                                key="crop_top",
+                            )
+                            bottom_pct = st.slider(
+                                "Bottom (%)",
+                                10,
+                                100,
+                                100,
+                                key="crop_bottom",
+                            )
+
+                        if (
+                            left_pct >= right_pct
+                            or top_pct >= bottom_pct
+                        ):
+                            st.error(
+                                "Invalid crop rectangle. "
+                                "Left must be less than Right and "
+                                "Top must be less than Bottom."
+                            )
+                            crop_valid = False
+                        else:
+                            crop_valid = True
+
+                            x1 = int(width * left_pct / 100)
+                            x2 = int(width * right_pct / 100)
+                            y1 = int(height * top_pct / 100)
+                            y2 = int(height * bottom_pct / 100)
+
+                            cropped_image = image.crop(
+                                (x1, y1, x2, y2)
+                            )
+
+                    else:
+                        crop_valid = True
+
+                    st.image(
+                        cropped_image,
+                        caption="Photograph preview",
+                        use_container_width=True,
+                    )
+
+                    if st.button(
+                        "Save Photograph",
+                        type="primary",
+                        key="save_photo",
+                        disabled=not crop_valid,
+                    ):
+
+                        output = BytesIO()
+                        cropped_image.save(
+                            output,
+                            format="JPEG",
+                            quality=95,
+                            optimize=True,
+                        )
+
+                        existing_documents = list_documents(case_id)
+
+                        number = 1
+
+                        while True:
+                            proposed_name = f"{photo_prefix}{number}.jpg"
+
+                            collision = any(
+                                d["filename"].lower()
+                                == proposed_name.lower()
+                                for d in existing_documents
+                            )
+
+                            if not collision:
+                                break
+
+                            number += 1
+
+                        add_document(
+                            case_id,
+                            proposed_name,
+                            photo_type,
+                            output.getvalue(),
+                            "image/jpeg",
+                        )
+
+                        st.toast(
+                            f"{proposed_name} saved successfully.",
+                            icon="📷",
+                        )
+                        st.rerun()
+
+                except Exception as error:
+                    st.error("The photograph could not be processed.")
+                    st.exception(error)
+
+            st.divider()
             st.subheader("Documents in Case")
 
             documents = list_documents(case_id)
 
             if not documents:
-
                 st.info("No documents have been uploaded yet.")
 
             else:
 
                 for document in documents:
 
-                    left, middle, right = st.columns(
-                        [5, 3, 1]
-                    )
+                    left, middle, right = st.columns([5, 3, 1])
 
                     with left:
                         st.write(
@@ -320,62 +476,61 @@ elif page == "Case Workspace":
                             )
 
                     with right:
-
                         if st.button(
                             "Delete",
                             key=f"delete_{document['id']}",
                         ):
-
-                            delete_document(
-                                document["id"]
-                            )
-
-                            st.success(
-                                "Document deleted."
-                            )
-
+                            delete_document(document["id"])
+                            st.toast("Document deleted.", icon="🗑️")
                             st.rerun()
 
         with tabs[1]:
-
             st.subheader("Investigation Record Completeness")
-
             st.info(
-                "M-POL will inspect the actual document contents and "
-                "identify documents referred to in the record but not "
-                "available in the case workspace."
+                "The AI workflow will identify documents referenced in the "
+                "uploaded record but not present in the current workspace."
+            )
+            st.markdown(
+                """
+- 🟢 Present
+- 🟡 Referenced but not located
+- ⚠️ Requires IO verification
+"""
             )
 
         with tabs[2]:
-
             st.subheader("Investigation Chronology")
-
             st.info(
-                "The IO does not need to upload documents chronologically. "
-                "M-POL will reconstruct chronology internally from dates, "
-                "times and investigative events found in the documents."
+                "Upload documents in any order. M-POL reconstructs dates, "
+                "times, places and investigative events internally."
+            )
+            st.markdown(
+                """
+- Incident
+- FIR registration
+- Investigation actions
+- Statements
+- Seizures/recoveries
+- Arrests
+- Medical examination
+- Expert examination
+- Electronic evidence collection
+- Court proceedings
+"""
             )
 
         with tabs[3]:
-
             st.subheader("Evidence Matrix")
-
             st.info(
-                "M-POL will map material facts to supporting witnesses, "
-                "documents, expert evidence and other material."
+                "M-POL will map allegations/material facts against witnesses, "
+                "documents, objects and expert evidence."
             )
 
         with tabs[4]:
-
             st.subheader("Legal Ingredient Mapping")
-
-            st.info(
-                "M-POL will identify statutory ingredients and map available evidence against them."
-            )
-
             st.warning(
-                "Legal provisions and case law must be independently "
-                "verified before use in an official police document."
+                "Legal provisions and case law must be independently verified "
+                "before use in an official police document."
             )
 
         with tabs[5]:
@@ -390,14 +545,14 @@ elif page == "Case Workspace":
                     "Draft Chargesheet",
                     "Improve Existing Police Report",
                 ],
+                key="ai_action",
             )
 
-            if st.button("Run M-POL AI"):
+            if st.button("Run M-POL AI", key="run_ai"):
 
                 if not documents:
-
-                    st.warning(
-                        "Upload at least one investigation document first."
+                    st.error(
+                        "No investigation documents have been uploaded."
                     )
 
                 else:
@@ -411,43 +566,37 @@ Police Station: {case['police_station']}
 District: {case['district']}
 Sections: {case['sections']}
 Investigating Officer: {case['io_name']}
+
+DOCUMENTS CURRENTLY REGISTERED
 """
 
-                    with st.spinner(
-                        "M-POL is reading the case record..."
-                    ):
+                    for document in documents:
+                        case_context += (
+                            f"- {document['filename']} | "
+                            f"Category: {document['category']}\n"
+                        )
 
-                        try:
+                    try:
+                        result = run_ai(
+                            action,
+                            case_context,
+                            documents,
+                        )
 
-                            result = run_ai(
-                                action,
-                                case_context,
-                                documents,
-                            )
+                        st.success("AI analysis completed.")
+                        st.subheader("M-POL AI Output")
+                        st.markdown(result)
 
-                            st.success(
-                                "M-POL analysis completed."
-                            )
-
-                            st.subheader("M-POL AI Output")
-                            st.markdown(result)
-
-                        except Exception as error:
-
-                            st.error(
-                                "AI workflow failed."
-                            )
-
-                            st.exception(error)
+                    except Exception as error:
+                        st.error("AI workflow failed.")
+                        st.exception(error)
 
         with tabs[6]:
-
             st.subheader("Supervisory Audit")
-
             st.info(
-                "The supervisory audit will check the AI draft against "
-                "the available case record, source references, evidence "
-                "gaps and contradictions."
+                "Supervisory audit will check unsupported factual assertions, "
+                "missing documents, contradictions, chronology issues, legal "
+                "ingredient gaps and unverified conclusions."
             )
 
 
@@ -459,23 +608,30 @@ elif page == "AI Rules":
         """
 ### Core safeguards
 
-**No invented facts:** M-POL must not create facts, witnesses,
-evidence, dates, places or investigative actions.
+**No invented facts:** The AI must not create facts, witnesses, evidence,
+dates, places or investigative actions.
 
-**Source-based drafting:** Important factual assertions should be
-traceable to the uploaded record.
+**Source-first:** Uploaded records are the factual source.
 
-**Referenced documents:** A document mentioned in another record but
-not uploaded is reported as "Referenced but not located in the current
-workspace" — not treated as proof that it does not exist.
+**Missing documents:** If a record refers to an unavailable document, the
+AI must say it is "Referenced but not located in the current workspace."
 
-**Conflicts:** Contradictions are identified rather than silently
+**Contradictions:** Conflicting records must be identified, not silently
 resolved.
+
+**Legal verification:** Legal provisions and case law must be verified
+against approved legal sources before official use.
 
 **Human responsibility:** The Investigating Officer remains responsible
 for the investigation and final official document.
 
-**AI draft:** Every generated FR, chargesheet or report must be
-reviewed and verified by the authorised officer before official use.
+**AI output:** Every generated FR, chargesheet or report is a draft and
+must be reviewed and verified before official use.
 """
     )
+
+    st.divider()
+    st.write("M-POL AI — current prototype")
+    st.write("OpenAI API key: Streamlit Secrets")
+    st.write("Document retrieval: OpenAI File Search")
+    st.write("Photograph analysis: Responses API vision input")
