@@ -417,7 +417,9 @@ def _call_model(
 
 
 def run_ai(task: str, case_context: str, documents: list[dict] | None = None) -> str:
-    """
+
+    return "DEPLOYMENT TEST: NEW AI_PROVIDER.PY IS RUNNING"
+"""
     EMERGENCY DIAGNOSTIC MODE.
 
     Sends ONLY a tiny text request to the model.
