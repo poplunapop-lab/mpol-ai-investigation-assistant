@@ -17,6 +17,7 @@ from database import (
     list_cases,
     add_document,
     list_documents,
+    delete_document,
 )
 
 from ai_provider import run_ai
@@ -325,6 +326,13 @@ elif page == "Case Workspace":
                 ],
             )
 
+            other_document_type = ""
+            if document_category == "Other":
+                other_document_type = st.text_input(
+                    "Specify document type",
+                    placeholder="Example: Wireless requisition / Forensic photograph / Bank record",
+                )
+
             if st.button(
                 "Register Uploaded Documents"
             ):
@@ -337,12 +345,26 @@ elif page == "Case Workspace":
 
                 else:
 
+                    if document_category == "Other" and not other_document_type.strip():
+                        st.error("Please specify what type of document 'Other' refers to.")
+                        st.stop()
+
+                    stored_category = (
+                        f"Other — {other_document_type.strip()}"
+                        if document_category == "Other"
+                        else document_category
+                    )
+
                     for uploaded_file in uploaded_files:
+
+                        file_bytes = uploaded_file.getvalue()
 
                         add_document(
                             case_id,
                             uploaded_file.name,
-                            document_category,
+                            stored_category,
+                            file_data=file_bytes,
+                            mime_type=uploaded_file.type,
                         )
 
                     st.success(
@@ -369,13 +391,35 @@ elif page == "Case Workspace":
 
                 for document in documents:
 
-                    st.write(
-                        f"📄 **{document['filename']}**"
-                    )
+                    col_a, col_b, col_c = st.columns([5, 3, 1])
 
-                    st.caption(
-                        f"Category: {document['category']}"
-                    )
+                    with col_a:
+                        st.write(
+                            f"📄 **{document['filename']}**"
+                        )
+                        st.caption(
+                            f"Category: {document['category']} | "
+                            f"Document ID: DOC-{document['id']:04d}"
+                        )
+
+                    with col_b:
+                        if document["file_data"]:
+                            size_kb = (document["file_size"] or 0) / 1024
+                            st.caption(
+                                f"✅ Content stored ({size_kb:.0f} KB)"
+                            )
+                        else:
+                            st.caption(
+                                "⚠️ Content not stored — re-upload this document"
+                            )
+
+                    with col_c:
+                        if st.button(
+                            "Delete",
+                            key=f"delete_document_{document['id']}",
+                        ):
+                            delete_document(document["id"])
+                            st.rerun()
 
         # =================================================
         # COMPLETENESS
@@ -429,9 +473,9 @@ human verification.
             )
 
             st.info(
-                "The chronology engine will extract dates, "
-                "times, places and investigative events from "
-                "the actual documents."
+                "M-POL will reconstruct chronology internally from the actual "
+                "document contents. The IO does not need to upload documents "
+                "in chronological order."
             )
 
             st.write(
@@ -595,6 +639,7 @@ DOCUMENTS CURRENTLY REGISTERED
                         result = run_ai(
                             action,
                             case_context,
+                            documents,
                         )
 
                         st.success(
@@ -615,9 +660,18 @@ DOCUMENTS CURRENTLY REGISTERED
                             "AI workflow failed."
                         )
 
-                        st.exception(
-                            error
-                        )
+                        error_text = str(error)
+                        if "credit_balance_exhausted" in error_text or "insufficient_quota" in error_text:
+                            st.warning(
+                                "The OpenAI API connection is working, but the API "
+                                "credit balance is exhausted. Add API credits and try again."
+                            )
+                        elif "OPENAI_API_KEY" in error_text:
+                            st.warning(
+                                "OPENAI_API_KEY is not configured correctly in Streamlit Secrets."
+                            )
+                        else:
+                            st.exception(error)
 
         # =================================================
         # SUPERVISORY AUDIT
