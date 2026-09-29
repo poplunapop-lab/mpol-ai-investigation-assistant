@@ -1,137 +1,250 @@
+
 import sqlite3
 from pathlib import Path
 
-DB = Path(__file__).resolve().parent / "mpol_ai.sqlite3"
+DB_PATH = Path(__file__).resolve().parent / "mpol.db"
+FILES_DIR = Path(__file__).resolve().parent / "case_documents"
+FILES_DIR.mkdir(exist_ok=True)
 
 
-def connect():
-    con = sqlite3.connect(DB)
-    con.row_factory = sqlite3.Row
-    return con
-
-
-def _add_column_if_missing(con, table, column, definition):
-    columns = [row[1] for row in con.execute(f"PRAGMA table_info({table})").fetchall()]
-    if column not in columns:
-        con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+def _connect():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
 def init_db():
-    con = connect()
-    con.executescript("""
-    CREATE TABLE IF NOT EXISTS cases (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        fir_no TEXT NOT NULL,
-        police_station TEXT NOT NULL,
-        district TEXT,
-        sections TEXT,
-        io_name TEXT,
-        status TEXT DEFAULT 'Investigation'
-    );
+    conn = _connect()
+    cur = conn.cursor()
 
-    CREATE TABLE IF NOT EXISTS documents (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        case_id INTEGER NOT NULL,
-        filename TEXT NOT NULL,
-        category TEXT,
-        referenced_status TEXT DEFAULT 'present',
-        notes TEXT,
-        file_data BLOB,
-        mime_type TEXT,
-        file_size INTEGER,
-        FOREIGN KEY(case_id) REFERENCES cases(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS audit_log (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        case_id INTEGER,
-        actor TEXT,
-        action TEXT,
-        detail TEXT,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    );
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS cases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fir_no TEXT NOT NULL,
+            police_station TEXT NOT NULL,
+            district TEXT,
+            sections TEXT,
+            io_name TEXT,
+            status TEXT DEFAULT 'Investigation',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
     """)
 
-    # Safe migration for databases created by the earlier M-POL prototype.
-    _add_column_if_missing(con, "documents", "file_data", "BLOB")
-    _add_column_if_missing(con, "documents", "mime_type", "TEXT")
-    _add_column_if_missing(con, "documents", "file_size", "INTEGER")
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            case_id INTEGER NOT NULL,
+            filename TEXT NOT NULL,
+            category TEXT,
+            file_path TEXT,
+            file_size INTEGER DEFAULT 0,
+            openai_file_id TEXT,
+            vector_store_id TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(case_id) REFERENCES cases(id)
+        )
+    """)
 
-    con.commit()
-    con.close()
+    # Safe migration for databases created by the older prototype.
+    existing = {
+        row["name"]
+        for row in cur.execute("PRAGMA table_info(documents)").fetchall()
+    }
+
+    migrations = {
+        "file_path": "ALTER TABLE documents ADD COLUMN file_path TEXT",
+        "file_size": "ALTER TABLE documents ADD COLUMN file_size INTEGER DEFAULT 0",
+        "openai_file_id": "ALTER TABLE documents ADD COLUMN openai_file_id TEXT",
+        "vector_store_id": "ALTER TABLE documents ADD COLUMN vector_store_id TEXT",
+    }
+
+    for column, sql in migrations.items():
+        if column not in existing:
+            try:
+                cur.execute(sql)
+            except sqlite3.OperationalError:
+                pass
+
+    conn.commit()
+    conn.close()
 
 
-def create_case(fir_no, ps, district, sections, io_name):
-    con = connect()
-    cur = con.execute(
-        "INSERT INTO cases(fir_no,police_station,district,sections,io_name) VALUES(?,?,?,?,?)",
-        (fir_no, ps, district, sections, io_name),
-    )
-    con.commit()
-    cid = cur.lastrowid
-    con.close()
-    return cid
+def create_case(fir_no, police_station, district, sections, io_name):
+    conn = _connect()
+    cur = conn.cursor()
+
+    cur.execute("""
+        INSERT INTO cases
+        (fir_no, police_station, district, sections, io_name, status)
+        VALUES (?, ?, ?, ?, ?, 'Investigation')
+    """, (
+        fir_no,
+        police_station,
+        district,
+        sections,
+        io_name,
+    ))
+
+    case_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+
+    return case_id
 
 
 def list_cases():
-    con = connect()
-    rows = con.execute("SELECT * FROM cases ORDER BY id DESC").fetchall()
-    con.close()
-    return rows
+    conn = _connect()
+    rows = conn.execute("""
+        SELECT id, fir_no, police_station, district, sections,
+               io_name, status, created_at
+        FROM cases
+        ORDER BY id DESC
+    """).fetchall()
+    conn.close()
+
+    return [dict(row) for row in rows]
 
 
-def add_document(case_id, filename, category, notes="", file_data=None, mime_type=None):
-    con = connect()
-    con.execute(
-        """
+def add_document(
+    case_id,
+    filename,
+    category,
+    file_bytes=None,
+    file_type=None,
+):
+    """
+    Register a document and, when file_bytes is supplied, actually store
+    the uploaded file. This is the critical change from the old prototype.
+    """
+    conn = _connect()
+    cur = conn.cursor()
+
+    cur.execute("""
         INSERT INTO documents
-        (case_id, filename, category, notes, file_data, mime_type, file_size)
-        VALUES(?,?,?,?,?,?,?)
-        """,
-        (
-            case_id,
-            filename,
-            category,
-            notes,
-            sqlite3.Binary(file_data) if file_data is not None else None,
-            mime_type,
-            len(file_data) if file_data is not None else None,
-        ),
-    )
-    con.commit()
-    con.close()
+        (case_id, filename, category, file_size)
+        VALUES (?, ?, ?, ?)
+    """, (
+        case_id,
+        filename,
+        category,
+        len(file_bytes) if file_bytes else 0,
+    ))
+
+    document_id = cur.lastrowid
+
+    file_path = None
+
+    if file_bytes:
+        case_dir = FILES_DIR / str(case_id)
+        case_dir.mkdir(parents=True, exist_ok=True)
+
+        safe_name = Path(filename).name
+        file_path_obj = case_dir / f"{document_id}_{safe_name}"
+        file_path_obj.write_bytes(file_bytes)
+        file_path = str(file_path_obj)
+
+        cur.execute("""
+            UPDATE documents
+            SET file_path = ?, file_size = ?
+            WHERE id = ?
+        """, (
+            file_path,
+            len(file_bytes),
+            document_id,
+        ))
+
+    conn.commit()
+    conn.close()
+
+    return document_id
 
 
 def list_documents(case_id):
-    con = connect()
-    rows = con.execute(
-        "SELECT * FROM documents WHERE case_id=? ORDER BY id", (case_id,)
-    ).fetchall()
-    con.close()
-    return rows
+    conn = _connect()
+    rows = conn.execute("""
+        SELECT id, case_id, filename, category, file_path,
+               file_size, openai_file_id, vector_store_id, created_at
+        FROM documents
+        WHERE case_id = ?
+        ORDER BY id
+    """, (case_id,)).fetchall()
+    conn.close()
+
+    return [dict(row) for row in rows]
 
 
 def get_document(document_id):
-    con = connect()
-    row = con.execute(
-        "SELECT * FROM documents WHERE id=?", (document_id,)
-    ).fetchone()
-    con.close()
-    return row
+    conn = _connect()
+    row = conn.execute("""
+        SELECT id, case_id, filename, category, file_path,
+               file_size, openai_file_id, vector_store_id, created_at
+        FROM documents
+        WHERE id = ?
+    """, (document_id,)).fetchone()
+    conn.close()
+
+    return dict(row) if row else None
 
 
 def delete_document(document_id):
-    con = connect()
-    con.execute("DELETE FROM documents WHERE id=?", (document_id,))
-    con.commit()
-    con.close()
+    document = get_document(document_id)
 
+    if not document:
+        return False
 
-def log(case_id, actor, action, detail=""):
-    con = connect()
-    con.execute(
-        "INSERT INTO audit_log(case_id,actor,action,detail) VALUES(?,?,?,?)",
-        (case_id, actor, action, detail),
+    file_path = document.get("file_path")
+
+    if file_path:
+        try:
+            Path(file_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    conn = _connect()
+    conn.execute(
+        "DELETE FROM documents WHERE id = ?",
+        (document_id,),
     )
-    con.commit()
-    con.close()
+    conn.commit()
+    conn.close()
+
+    return True
+
+
+def set_openai_document_ids(
+    document_id,
+    openai_file_id=None,
+    vector_store_id=None,
+):
+    conn = _connect()
+
+    conn.execute("""
+        UPDATE documents
+        SET openai_file_id = COALESCE(?, openai_file_id),
+            vector_store_id = COALESCE(?, vector_store_id)
+        WHERE id = ?
+    """, (
+        openai_file_id,
+        vector_store_id,
+        document_id,
+    ))
+
+    conn.commit()
+    conn.close()
+
+
+def get_case_vector_store_id(case_id):
+    conn = _connect()
+
+    row = conn.execute("""
+        SELECT vector_store_id
+        FROM documents
+        WHERE case_id = ?
+          AND vector_store_id IS NOT NULL
+          AND vector_store_id != ''
+        LIMIT 1
+    """, (case_id,)).fetchone()
+
+    conn.close()
+
+    return row["vector_store_id"] if row else None
