@@ -4,7 +4,7 @@ import sys
 
 sys.path.append(str(Path(__file__).resolve().parent))
 from database import init_db, create_case, list_cases, add_document, list_documents
-from ai_provider import build_prompt, unavailable_provider_message
+from ai_provider import build_prompt, run_ai
 
 init_db()
 
@@ -126,8 +126,29 @@ elif page == "Case Workspace":
             st.subheader("FR / Chargesheet")
             action = st.selectbox("Action", ["Draft Final Report", "Draft Chargesheet", "Improve Existing Report"])
             if st.button("Run documentation workflow"):
-                st.warning(unavailable_provider_message())
-                st.code(build_prompt(action, f"Case ID: {cid}; FIR: {case['fir_no']}"))
+    case_context = f"""
+Case ID: {cid}
+FIR Number: {case['fir_no']}
+Police Station: {case['police_station']}
+District: {case['district']}
+Sections: {case['sections']}
+Investigating Officer: {case['io_name']}
+
+Documents currently registered in the workspace:
+"""
+
+    for d in docs:
+        case_context += f"- {d['filename']} | Category: {d['category']}\n"
+
+    with st.spinner("M-POL AI is analysing the case..."):
+        try:
+            result = run_ai(action, case_context)
+
+            st.subheader("M-POL AI Output")
+            st.markdown(result)
+
+        except Exception as e:
+            st.error(f"AI workflow failed: {e}")
 
         with tabs[6]:
             st.subheader("Supervisory Audit")
