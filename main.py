@@ -1,11 +1,7 @@
 import streamlit as st
 import sys
-from ai_provider import run_ai
-
-
 from pathlib import Path
 from io import BytesIO
-
 
 from PIL import Image
 
@@ -47,7 +43,6 @@ page = st.sidebar.radio(
 
 
 if page == "Dashboard":
-
     st.header("Investigation Dashboard")
     cases = list_cases()
 
@@ -59,10 +54,7 @@ if page == "Dashboard":
     with col2:
         st.metric(
             "Investigation",
-            sum(
-                1 for case in cases
-                if case["status"] == "Investigation"
-            ),
+            sum(1 for case in cases if case["status"] == "Investigation"),
         )
 
     with col3:
@@ -80,9 +72,7 @@ if page == "Dashboard":
         )
     else:
         for case in cases:
-            st.write(
-                f"**FIR {case['fir_no']} — {case['police_station']}**"
-            )
+            st.write(f"**FIR {case['fir_no']} — {case['police_station']}**")
             st.write(
                 f"District: {case['district']} | "
                 f"Sections: {case['sections']} | "
@@ -93,11 +83,9 @@ if page == "Dashboard":
 
 
 elif page == "New Case":
-
     st.header("Create Investigation Workspace")
 
     with st.form("new_case_form"):
-
         fir_no = st.text_input(
             "FIR Number",
             placeholder="Example: 42/2026",
@@ -132,7 +120,6 @@ elif page == "New Case":
 
 
 elif page == "Case Workspace":
-
     st.header("Case Workspace")
     cases = list_cases()
 
@@ -140,7 +127,6 @@ elif page == "Case Workspace":
         st.info("No cases available. Create a case first.")
 
     else:
-
         case_options = {}
 
         for case in cases:
@@ -182,7 +168,6 @@ elif page == "Case Workspace":
         )
 
         with tabs[0]:
-
             st.subheader("Investigation Documents")
 
             st.write(
@@ -226,11 +211,7 @@ elif page == "Case Workspace":
                     key="other_document_type",
                 )
 
-            if st.button(
-                "Register Uploaded Documents",
-                key="register_documents",
-            ):
-
+            if st.button("Register Uploaded Documents", key="register_documents"):
                 if not uploaded_files:
                     st.warning("Please select at least one document.")
 
@@ -253,14 +234,10 @@ elif page == "Case Workspace":
                             uploaded_file.type,
                         )
 
-                    st.toast(
-                        "Documents registered successfully.",
-                        icon="✅",
-                    )
+                    st.toast("Documents registered successfully.", icon="✅")
                     st.rerun()
 
             st.divider()
-
             st.markdown("### 2. Photographs / Images")
 
             st.caption(
@@ -299,11 +276,7 @@ elif page == "Case Workspace":
                     "Camera flash: Streamlit/browser cannot force the iPhone "
                     "hardware flash ON. Turn the iPhone flash ON before capture."
                 )
-                photo_file = st.camera_input(
-                    "Take Photograph",
-                    key="case_camera",
-                )
-
+                photo_file = st.camera_input("Take Photograph", key="case_camera")
             else:
                 photo_file = st.file_uploader(
                     "Select Photograph",
@@ -313,7 +286,6 @@ elif page == "Case Workspace":
                 )
 
             if photo_file is not None:
-
                 try:
                     image = Image.open(photo_file).convert("RGB")
                     width, height = image.size
@@ -334,59 +306,26 @@ elif page == "Case Workspace":
                         col1, col2 = st.columns(2)
 
                         with col1:
-                            left_pct = st.slider(
-                                "Left (%)",
-                                0,
-                                90,
-                                0,
-                                key="crop_left",
-                            )
-                            right_pct = st.slider(
-                                "Right (%)",
-                                10,
-                                100,
-                                100,
-                                key="crop_right",
-                            )
+                            left_pct = st.slider("Left (%)", 0, 90, 0, key="crop_left")
+                            right_pct = st.slider("Right (%)", 10, 100, 100, key="crop_right")
 
                         with col2:
-                            top_pct = st.slider(
-                                "Top (%)",
-                                0,
-                                90,
-                                0,
-                                key="crop_top",
-                            )
-                            bottom_pct = st.slider(
-                                "Bottom (%)",
-                                10,
-                                100,
-                                100,
-                                key="crop_bottom",
-                            )
+                            top_pct = st.slider("Top (%)", 0, 90, 0, key="crop_top")
+                            bottom_pct = st.slider("Bottom (%)", 10, 100, 100, key="crop_bottom")
 
-                        if (
-                            left_pct >= right_pct
-                            or top_pct >= bottom_pct
-                        ):
+                        if left_pct >= right_pct or top_pct >= bottom_pct:
                             st.error(
-                                "Invalid crop rectangle. "
-                                "Left must be less than Right and "
-                                "Top must be less than Bottom."
+                                "Invalid crop rectangle. Left must be less than Right "
+                                "and Top must be less than Bottom."
                             )
                             crop_valid = False
                         else:
                             crop_valid = True
-
                             x1 = int(width * left_pct / 100)
                             x2 = int(width * right_pct / 100)
                             y1 = int(height * top_pct / 100)
                             y2 = int(height * bottom_pct / 100)
-
-                            cropped_image = image.crop(
-                                (x1, y1, x2, y2)
-                            )
-
+                            cropped_image = image.crop((x1, y1, x2, y2))
                     else:
                         crop_valid = True
 
@@ -402,7 +341,6 @@ elif page == "Case Workspace":
                         key="save_photo",
                         disabled=not crop_valid,
                     ):
-
                         output = BytesIO()
                         cropped_image.save(
                             output,
@@ -412,21 +350,16 @@ elif page == "Case Workspace":
                         )
 
                         existing_documents = list_documents(case_id)
-
                         number = 1
 
                         while True:
                             proposed_name = f"{photo_prefix}{number}.jpg"
-
                             collision = any(
-                                d["filename"].lower()
-                                == proposed_name.lower()
+                                d["filename"].lower() == proposed_name.lower()
                                 for d in existing_documents
                             )
-
                             if not collision:
                                 break
-
                             number += 1
 
                         add_document(
@@ -437,10 +370,7 @@ elif page == "Case Workspace":
                             "image/jpeg",
                         )
 
-                        st.toast(
-                            f"{proposed_name} saved successfully.",
-                            icon="📷",
-                        )
+                        st.toast(f"{proposed_name} saved successfully.", icon="📷")
                         st.rerun()
 
                 except Exception as error:
@@ -454,36 +384,26 @@ elif page == "Case Workspace":
 
             if not documents:
                 st.info("No documents have been uploaded yet.")
-
             else:
-
                 for document in documents:
-
                     left, middle, right = st.columns([5, 3, 1])
 
                     with left:
-                        st.write(
-                            f"📄 **{document['filename']}**"
-                        )
+                        st.write(f"📄 **{document['filename']}**")
 
                     with middle:
                         if document["file_size"]:
                             size_kb = document["file_size"] / 1024
                             st.caption(
-                                f"{document['category']} | "
-                                f"{size_kb:.0f} KB | Stored"
+                                f"{document['category']} | {size_kb:.0f} KB | Stored"
                             )
                         else:
                             st.caption(
-                                f"{document['category']} | "
-                                "Content not stored"
+                                f"{document['category']} | Content not stored"
                             )
 
                     with right:
-                        if st.button(
-                            "Delete",
-                            key=f"delete_{document['id']}",
-                        ):
+                        if st.button("Delete", key=f"delete_{document['id']}"):
                             delete_document(document["id"])
                             st.toast("Document deleted.", icon="🗑️")
                             st.rerun()
@@ -494,13 +414,11 @@ elif page == "Case Workspace":
                 "The AI workflow will identify documents referenced in the "
                 "uploaded record but not present in the current workspace."
             )
-            st.markdown(
-                """
+            st.markdown("""
 - 🟢 Present
 - 🟡 Referenced but not located
 - ⚠️ Requires IO verification
-"""
-            )
+""")
 
         with tabs[2]:
             st.subheader("Investigation Chronology")
@@ -508,8 +426,7 @@ elif page == "Case Workspace":
                 "Upload documents in any order. M-POL reconstructs dates, "
                 "times, places and investigative events internally."
             )
-            st.markdown(
-                """
+            st.markdown("""
 - Incident
 - FIR registration
 - Investigation actions
@@ -520,8 +437,7 @@ elif page == "Case Workspace":
 - Expert examination
 - Electronic evidence collection
 - Court proceedings
-"""
-            )
+""")
 
         with tabs[3]:
             st.subheader("Evidence Matrix")
@@ -538,7 +454,6 @@ elif page == "Case Workspace":
             )
 
         with tabs[5]:
-
             st.subheader("FR / Chargesheet Documentation")
 
             action = st.selectbox(
@@ -553,14 +468,9 @@ elif page == "Case Workspace":
             )
 
             if st.button("Run M-POL AI", key="run_ai"):
-
                 if not documents:
-                    st.error(
-                        "No investigation documents have been uploaded."
-                    )
-
+                    st.error("No investigation documents have been uploaded.")
                 else:
-
                     case_context = f"""
 CASE INFORMATION
 
@@ -581,16 +491,10 @@ DOCUMENTS CURRENTLY REGISTERED
                         )
 
                     try:
-                        result = run_ai(
-                            action,
-                            case_context,
-                            documents,
-                        )
-
+                        result = run_ai(action, case_context, documents)
                         st.success("AI analysis completed.")
                         st.subheader("M-POL AI Output")
                         st.markdown(result)
-
                     except Exception as error:
                         st.error("AI workflow failed.")
                         st.exception(error)
@@ -605,11 +509,9 @@ DOCUMENTS CURRENTLY REGISTERED
 
 
 elif page == "AI Rules":
-
     st.header("M-POL AI — Investigation Rules")
 
-    st.markdown(
-        """
+    st.markdown("""
 ### Core safeguards
 
 **No invented facts:** The AI must not create facts, witnesses, evidence,
@@ -631,11 +533,10 @@ for the investigation and final official document.
 
 **AI output:** Every generated FR, chargesheet or report is a draft and
 must be reviewed and verified before official use.
-"""
-    )
+""")
 
     st.divider()
     st.write("M-POL AI — current prototype")
     st.write("OpenAI API key: Streamlit Secrets")
-    st.write("Document retrieval: OpenAI File Search")
-    st.write("Photograph analysis: Responses API vision input")
+    st.write("Document retrieval: Controlled OpenAI vector-store retrieval")
+    st.write("Final generation: Text-only capped request")
