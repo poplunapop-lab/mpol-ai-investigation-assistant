@@ -45,7 +45,7 @@ PROVIDER_VERSION = "M-POL-2026-09-30-FINAL-TEXT-ONLY"
 MAX_RETRIEVAL_QUERIES = 8
 RESULTS_PER_QUERY = 3
 MAX_CHARS_PER_CHUNK = 4500
-MAX_EVIDENCE_CHARS = 60000
+MAX_EVIDENCE_CHARS = 30000
 MAX_IMAGES = 12
 MAX_OUTPUT_TOKENS = 12000
 MAX_IMAGE_DIMENSION = 1600
@@ -305,21 +305,45 @@ def _retrieve_evidence(
 
 
 def _build_evidence_packet(case_context: str, evidence: list[dict]) -> str:
+    # CRITICAL SAFETY LIMIT:
+    # main.py may provide a very large case_context. Never pass the complete
+    # case context directly to the final model.
+    MAX_CASE_CONTEXT_CHARS = 12000
+
+    safe_case_context = _safe_text(case_context).strip()
+
+    if len(safe_case_context) > MAX_CASE_CONTEXT_CHARS:
+        safe_case_context = (
+            safe_case_context[:MAX_CASE_CONTEXT_CHARS]
+            + "\n\n[CASE CONTEXT TRUNCATED BY M-POL AI SAFETY LIMIT]"
+        )
+
     blocks = [
         "CASE METADATA / WORKSPACE CONTEXT",
-        case_context.strip(),
+        safe_case_context,
         "",
         "RETRIEVED SOURCE EXCERPTS",
         "Only the excerpts below were selected for this generation call.",
     ]
+
     for i, item in enumerate(evidence, 1):
         score = item.get("score")
-        score_text = f" | similarity={float(score):.3f}" if score is not None else ""
-        blocks.append(
-            f"\n--- SOURCE {i}: {item['filename']}{score_text} ---\n{item['text']}"
+        score_text = (
+            f" | similarity={float(score):.3f}"
+            if score is not None
+            else ""
         )
+
+        blocks.append(
+            f"\n--- SOURCE {i}: {item['filename']}{score_text} ---\n"
+            f"{item['text']}"
+        )
+
     if not evidence:
-        blocks.append("\nNo text excerpts were retrieved from the case documents.")
+        blocks.append(
+            "\nNo text excerpts were retrieved from the case documents."
+        )
+
     return "\n".join(blocks)
 
 
@@ -374,7 +398,7 @@ def _call_model(
     input_payload = _build_input(task, case_context, evidence)
 
     token_count = _count_input_tokens(client, input_payload)
-    if token_count is not None and token_count > 400000:
+    if token_count is not None and token_count > 100000:
         # This should be practically unreachable because of our evidence cap,
         # but it is a final guard against a future SDK/backend expansion.
         raise RuntimeError(
